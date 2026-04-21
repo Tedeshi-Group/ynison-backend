@@ -1,0 +1,20 @@
+{
+  "name": "yandex-sync",
+  "version": "1.0.0",
+  "description": "Yandex Music sync lobby prototype",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "nanoid": "^5.1.7",
+    "ws": "^8.20.0"
+  }
+}
