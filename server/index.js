@@ -5,7 +5,7 @@ const { WebSocketServer } = require("ws");
 const { nanoid } = require("nanoid");
 const { URL } = require("url");
 
-const PORT = Number(process.env.PORT || 8787);
+const PORT = Number(process.env.PORT || 10001);
 const ROOM_INACTIVE_TTL_MS = 1000 * 60 * 60 * 4;
 const OFFLINE_PARTICIPANT_TTL_MS = 1000 * 60 * 60;
 const HEARTBEAT_INTERVAL_MS = 1000 * 10;
