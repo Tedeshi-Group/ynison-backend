@@ -13,7 +13,22 @@ const HEARTBEAT_MAX_MISSES = 3;
 const CONTROL_ACTIONS = new Set(["play", "pause", "seek", "next", "queue"]);
 
 const app = express();
-app.use(cors());
+
+// Chrome Private Network Access: страница с публичного origin (music.yandex.ru) → LAN IP.
+// Без этого заголовка preflight падает; в DevTools часто видно только про Allow-Origin.
+app.use((req, res, next) => {
+  if (req.headers["access-control-request-private-network"] === "true") {
+    res.setHeader("Access-Control-Allow-Private-Network", "true");
+  }
+  next();
+});
+
+app.use(
+  cors({
+    origin: true,
+    methods: ["GET", "POST", "OPTIONS", "HEAD"],
+  })
+);
 app.use(express.json({ limit: "1mb" }));
 
 const rooms = new Map();
