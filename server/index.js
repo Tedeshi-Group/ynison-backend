@@ -189,6 +189,37 @@ function validatePermissionsPayload(payload) {
   };
 }
 
+function validateYmPlayerStatePayload(payload) {
+  if (!isPlainObject(payload)) {
+    return { ok: false, error: "ym_player_state payload must be an object" };
+  }
+
+  const at = ensureFiniteNumber(payload.at);
+  if (at === null) {
+    return { ok: false, error: "ym_player_state.at must be a finite number" };
+  }
+
+  const source = normalizeString(payload.source, "");
+  if (!source) {
+    return { ok: false, error: "ym_player_state.source is required" };
+  }
+
+  if (!isPlainObject(payload.playerState)) {
+    return { ok: false, error: "ym_player_state.playerState must be an object" };
+  }
+
+  return {
+    ok: true,
+    value: {
+      type: "ym_player_state",
+      at,
+      source,
+      playerState: payload.playerState,
+      trackId: normalizeString(payload.trackId, ""),
+    },
+  };
+}
+
 function createPlaybackSnapshot(source = "none") {
   const now = Date.now();
   return {
@@ -214,6 +245,7 @@ function buildRoomState(room) {
     hostId: room.hostId,
     roomName: room.roomName,
     playback: clonePlayback(room.playback),
+    ymPlayerState: room.ymPlayerState,
     participants: Array.from(room.participants.values()).map((participant) => ({
       clientId: participant.clientId,
       role: participant.role,
@@ -348,6 +380,7 @@ app.post("/rooms", (req, res) => {
     hostId: hostClientId,
     lastActivityAt: createdAt,
     playback: createPlaybackSnapshot(),
+    ymPlayerState: null,
     participants: new Map(),
   };
 
@@ -567,6 +600,23 @@ wss.on("connection", (socket, request) => {
         clientId: targetId,
         permissions: target.permissions,
       });
+      return;
+    }
+
+    if (payload.type === "ym_player_state") {
+      if (participant.role !== "host") {
+        send(socket, { type: "error", error: "Only host can send ym_player_state" });
+        return;
+      }
+
+      const ymStateResult = validateYmPlayerStatePayload(payload);
+      if (!ymStateResult.ok) {
+        send(socket, { type: "error", error: ymStateResult.error });
+        return;
+      }
+
+      room.ymPlayerState = ymStateResult.value;
+      broadcastRoom(room, room.ymPlayerState, clientId);
       return;
     }
 
