@@ -10,6 +10,8 @@ const ROOM_INACTIVE_TTL_MS = 1000 * 60 * 60 * 4;
 const OFFLINE_PARTICIPANT_TTL_MS = 1000 * 60 * 60;
 const HEARTBEAT_INTERVAL_MS = 1000 * 10;
 const HEARTBEAT_MAX_MISSES = 3;
+const MAX_HTTP_JSON_BYTES = 8 * 1024 * 1024;
+const MAX_WS_MESSAGE_BYTES = 8 * 1024 * 1024;
 const CONTROL_ACTIONS = new Set(["play", "pause", "seek", "next", "queue"]);
 
 const app = express();
@@ -29,7 +31,7 @@ app.use(
     methods: ["GET", "POST", "OPTIONS", "HEAD"],
   })
 );
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: MAX_HTTP_JSON_BYTES }));
 
 const rooms = new Map();
 
@@ -219,7 +221,8 @@ function validateYmPlayerStatePayload(payload) {
     return { ok: false, error: "ym_player_state.source is required" };
   }
 
-  if (!isPlainObject(payload.playerState)) {
+  const playerState = payload.playerState ?? payload.player_state;
+  if (!isPlainObject(playerState)) {
     return { ok: false, error: "ym_player_state.playerState must be an object" };
   }
 
@@ -229,10 +232,83 @@ function validateYmPlayerStatePayload(payload) {
       type: "ym_player_state",
       at,
       source,
-      playerState: payload.playerState,
+      playerState,
       trackId: normalizeString(payload.trackId, ""),
     },
   };
+}
+
+function validateYmPlayerStateV2Payload(payload) {
+  if (!isPlainObject(payload)) {
+    return { ok: false, error: "ym_player_state_v2 payload must be an object" };
+  }
+
+  const at = ensureFiniteNumber(payload.at);
+  if (at === null) {
+    return { ok: false, error: "ym_player_state_v2.at must be a finite number" };
+  }
+
+  const source = normalizeString(payload.source, "");
+  if (!source) {
+    return { ok: false, error: "ym_player_state_v2.source is required" };
+  }
+
+  const schemaVersion = ensureFiniteNumber(payload.schemaVersion);
+  if (schemaVersion === null || schemaVersion !== 2) {
+    return { ok: false, error: "ym_player_state_v2.schemaVersion must be 2" };
+  }
+
+  const playerState = payload.playerState ?? payload.player_state;
+  if (!isPlainObject(playerState)) {
+    return { ok: false, error: "ym_player_state_v2.playerState must be an object" };
+  }
+
+  if (!isPlainObject(payload.playbackSession)) {
+    return { ok: false, error: "ym_player_state_v2.playbackSession must be an object" };
+  }
+
+  if (!isPlainObject(payload.queueSnapshot)) {
+    return { ok: false, error: "ym_player_state_v2.queueSnapshot must be an object" };
+  }
+
+  return {
+    ok: true,
+    value: {
+      type: "ym_player_state_v2",
+      schemaVersion,
+      at,
+      source,
+      playerState,
+      playbackSession: payload.playbackSession,
+      queueSnapshot: payload.queueSnapshot,
+      trackId: normalizeString(payload.trackId, ""),
+    },
+  };
+}
+
+function buildLegacyYmPlayerStateFromV2(state) {
+  return {
+    type: "ym_player_state",
+    at: state.at,
+    source: state.source,
+    playerState: state.playerState,
+    trackId: state.trackId,
+    playbackSession: state.playbackSession,
+    queueSnapshot: state.queueSnapshot,
+  };
+}
+
+function isPlayerStateOutdated(existingState, incomingAt) {
+  if (!isPlainObject(existingState)) {
+    return false;
+  }
+
+  const existingAt = ensureFiniteNumber(existingState.at);
+  if (existingAt === null) {
+    return false;
+  }
+
+  return incomingAt < existingAt;
 }
 
 function createPlaybackSnapshot(source = "none") {
@@ -261,6 +337,8 @@ function buildRoomState(room) {
     roomName: room.roomName,
     playback: clonePlayback(room.playback),
     ymPlayerState: room.ymPlayerState,
+    ymPlayerStateV2: room.ymPlayerStateV2,
+    ym_state: room.ym_state,
     participants: Array.from(room.participants.values()).map((participant) => ({
       clientId: participant.clientId,
       role: participant.role,
@@ -396,6 +474,8 @@ app.post("/rooms", (req, res) => {
     lastActivityAt: createdAt,
     playback: createPlaybackSnapshot(),
     ymPlayerState: null,
+    ymPlayerStateV2: null,
+    ym_state: null,
     participants: new Map(),
   };
 
@@ -468,7 +548,7 @@ app.get("/rooms/:roomId", (req, res) => {
 });
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/ws" });
+const wss = new WebSocketServer({ server, path: "/ws", maxPayload: MAX_WS_MESSAGE_BYTES });
 
 wss.on("connection", (socket, request) => {
   const reqUrl = new URL(request.url, `http://${request.headers.host}`);
@@ -618,19 +698,47 @@ wss.on("connection", (socket, request) => {
       return;
     }
 
-    if (payload.type === "ym_player_state") {
+    if (payload.type === "ym_player_state" || payload.type === "ym_player_state_v2") {
       if (participant.role !== "host") {
-        send(socket, { type: "error", error: "Only host can send ym_player_state" });
+        send(socket, { type: "error", error: "Only host can send player state messages" });
         return;
       }
 
-      const ymStateResult = validateYmPlayerStatePayload(payload);
+      const ymStateResult =
+        payload.type === "ym_player_state_v2"
+          ? validateYmPlayerStateV2Payload(payload)
+          : validateYmPlayerStatePayload(payload);
       if (!ymStateResult.ok) {
         send(socket, { type: "error", error: ymStateResult.error });
         return;
       }
 
-      room.ymPlayerState = ymStateResult.value;
+      if (isPlayerStateOutdated(room.ymPlayerStateV2 || room.ymPlayerState, ymStateResult.value.at)) {
+        return;
+      }
+
+      if (ymStateResult.value.type === "ym_player_state_v2") {
+        room.ymPlayerStateV2 = ymStateResult.value;
+        room.ym_state = room.ymPlayerStateV2;
+        room.ymPlayerState = buildLegacyYmPlayerStateFromV2(room.ymPlayerStateV2);
+      } else {
+        room.ymPlayerState = ymStateResult.value;
+        if (!room.ymPlayerStateV2) {
+          room.ymPlayerStateV2 = {
+            type: "ym_player_state_v2",
+            schemaVersion: 2,
+            at: room.ymPlayerState.at,
+            source: room.ymPlayerState.source,
+            playerState: room.ymPlayerState.playerState,
+            playbackSession: null,
+            queueSnapshot: null,
+            trackId: room.ymPlayerState.trackId,
+          };
+          room.ym_state = room.ymPlayerStateV2;
+        }
+      }
+
+      broadcastRoom(room, room.ymPlayerStateV2, clientId);
       broadcastRoom(room, room.ymPlayerState, clientId);
       return;
     }
