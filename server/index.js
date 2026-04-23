@@ -3,7 +3,7 @@ const express = require("express");
 const cors = require("cors");
 const { WebSocketServer } = require("ws");
 
-const PORT = Number(process.env.PORT || 10001);
+const PORT = Number(process.env.PORT || 11001);
 
 const PROTOCOL_VERSION = 1;
 const MAX_HTTP_JSON_BYTES = "8mb";
